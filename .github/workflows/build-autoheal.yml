@@ -22,7 +22,12 @@ jobs:
         run: |
           pwd
           ls -R
-
+      - name: Debug ADO values
+        run: |
+          echo "ORG=${{ secrets.ADO_ORG }}"
+          echo "PROJECT=${{ secrets.ADO_PROJECT }}"
+          echo "PIPELINE_ID=${{ secrets.ADO_PIPELINE_ID }}"
+          
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
