@@ -120,10 +120,12 @@ jobs:
       - name: Trigger Azure DevOps pipeline
         run: |
           gitSha=$GITHUB_SHA
+          URL="https://dev.azure.com/${{ secrets.ADO_ORG }}/${{ secrets.ADO_PROJECT }}/_apis/pipelines/${{ secrets.ADO_PIPELINE_ID }}/runs?api-version=7.1-preview.1"
           echo "Triggering Azure DevOps pipeline with gitSha=$gitSha"
+          echo "URL=$URL"
           curl -u :${{ secrets.ADO_PAT }} \
             -H "Content-Type: application/json" \
             -X POST \
-            "https://dev.azure.com/${{ secrets.ADO_ORG }}/${{ secrets.ADO_PROJECT }}/_apis/pipelines/${{ secrets.ADO_PIPELINE_ID }}/runs?api-version=7.1-preview.1" \
+            "$URL" \
             -d "{\"templateParameters\": {\"gitSha\": \"${gitSha}\"}}" \
             | jq .
