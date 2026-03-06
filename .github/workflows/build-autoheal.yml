@@ -12,6 +12,7 @@ env:
 jobs:
   build-normalizer:
     runs-on: ubuntu-latest
+    environment: dev
 
     steps:
       - name: Checkout
