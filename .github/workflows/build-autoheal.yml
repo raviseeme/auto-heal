@@ -1,4 +1,4 @@
-name: autoheal-build
+name: autoheal-build-deploy
 
 on:
   push:
@@ -8,25 +8,17 @@ on:
 env:
   PYTHON_VERSION: '3.11'
   ARTIFACT_CONTAINER: autoheal-artifacts
+  NORMALIZER_APP_NAME: autoheal-dev-func-normalizer
+  ORCHESTRATOR_APP_NAME: autoheal-dev-func-orchestrator
 
 jobs:
-  build-normalizer:
+  build-and-deploy-normalizer:
     runs-on: ubuntu-latest
     environment: dev
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Debug repo structure
-        run: |
-          pwd
-          ls -R
-      - name: Debug ADO values
-        run: |
-          echo "ORG=${{ secrets.ADO_ORG }}"
-          echo "PROJECT=${{ secrets.ADO_PROJECT }}"
-          echo "PIPELINE_ID=${{ secrets.ADO_PIPELINE_ID }}"
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -53,7 +45,7 @@ jobs:
              "subscriptionId":"${{ secrets.AZURE_SUBSCRIPTION_ID }}",
              "tenantId":"${{ secrets.AZURE_TENANT_ID }}"}
 
-      - name: Upload artifact
+      - name: Upload artifact to Blob
         run: |
           az storage blob upload \
             --account-name "${{ secrets.AZURE_STORAGE_ACCOUNT }}" \
@@ -63,18 +55,19 @@ jobs:
             --auth-mode login \
             --overwrite true
 
-  build-orchestrator:
+      - name: Deploy event-normalizer
+        uses: Azure/functions-action@v1
+        with:
+          app-name: ${{ env.NORMALIZER_APP_NAME }}
+          package: event-normalizer.zip
+
+  build-and-deploy-orchestrator:
     runs-on: ubuntu-latest
     environment: dev
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Debug repo structure
-        run: |
-          pwd
-          ls -R
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -101,7 +94,7 @@ jobs:
              "subscriptionId":"${{ secrets.AZURE_SUBSCRIPTION_ID }}",
              "tenantId":"${{ secrets.AZURE_TENANT_ID }}"}
 
-      - name: Upload artifact
+      - name: Upload artifact to Blob
         run: |
           az storage blob upload \
             --account-name "${{ secrets.AZURE_STORAGE_ACCOUNT }}" \
@@ -111,21 +104,8 @@ jobs:
             --auth-mode login \
             --overwrite true
 
-  trigger-ado:
-    needs: [build-normalizer, build-orchestrator]
-    runs-on: ubuntu-latest
-    environment: dev
-
-    steps:
-      - name: Trigger Azure DevOps pipeline
-        run: |
-          gitSha=$GITHUB_SHA
-          URL="https://dev.azure.com/${{ secrets.ADO_ORG }}/${{ secrets.ADO_PROJECT }}/_apis/pipelines/${{ secrets.ADO_PIPELINE_ID }}/runs?api-version=7.1-preview.1"
-          echo "Triggering Azure DevOps pipeline with gitSha=$gitSha"
-          echo "URL=$URL"
-          curl -u :${{ secrets.ADO_PAT }} \
-            -H "Content-Type: application/json" \
-            -X POST \
-            "$URL" \
-            -d "{\"templateParameters\": {\"gitSha\": \"${gitSha}\"}}" \
-            | jq .
+      - name: Deploy orchestrator-core
+        uses: Azure/functions-action@v1
+        with:
+          app-name: ${{ env.ORCHESTRATOR_APP_NAME }}
+          package: orchestrator-core.zip
