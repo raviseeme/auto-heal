@@ -112,18 +112,18 @@ jobs:
             --overwrite true
 
   trigger-ado:
-  needs: [build-normalizer, build-orchestrator]
-  runs-on: ubuntu-latest
-  environment: dev
+    needs: [build-normalizer, build-orchestrator]
+    runs-on: ubuntu-latest
+    environment: dev
 
-  steps:
-    - name: Trigger Azure DevOps pipeline
-      run: |
-        gitSha=$GITHUB_SHA
-        echo "Triggering Azure DevOps pipeline with gitSha=$gitSha"
-        curl -u :${{ secrets.ADO_PAT }} \
-          -H "Content-Type: application/json" \
-          -X POST \
-          "https://dev.azure.com/${{ secrets.ADO_ORG }}/${{ secrets.ADO_PROJECT }}/_apis/pipelines/${{ secrets.ADO_PIPELINE_ID }}/runs?api-version=7.1-preview.1" \
-          -d "{\"templateParameters\": {\"gitSha\": \"${gitSha}\"}}" \
-          | jq .
+    steps:
+      - name: Trigger Azure DevOps pipeline
+        run: |
+          gitSha=$GITHUB_SHA
+          echo "Triggering Azure DevOps pipeline with gitSha=$gitSha"
+          curl -u :${{ secrets.ADO_PAT }} \
+            -H "Content-Type: application/json" \
+            -X POST \
+            "https://dev.azure.com/${{ secrets.ADO_ORG }}/${{ secrets.ADO_PROJECT }}/_apis/pipelines/${{ secrets.ADO_PIPELINE_ID }}/runs?api-version=7.1-preview.1" \
+            -d "{\"templateParameters\": {\"gitSha\": \"${gitSha}\"}}" \
+            | jq .
