@@ -1,0 +1,202 @@
+trigger:
+  branches:
+    include:
+      - main
+
+pr: none
+
+variables:
+  azureServiceConnection: 'sc-autoheal-dev'
+  resourceGroupName: 'rg-autoheal-dev'
+  location: 'eastus'
+  environmentName: 'dev'
+  prefix: 'autoheal'
+
+  bicepFile: 'infrastructure/bicep/main.bicep'
+
+  normalizerProjectPath: 'services/event-normalizer'
+  orchestratorProjectPath: 'services/orchestrator-core'
+
+  normalizerZip: '$(Build.ArtifactStagingDirectory)/event-normalizer.zip'
+  orchestratorZip: '$(Build.ArtifactStagingDirectory)/orchestrator-core.zip'
+
+stages:
+  - stage: Validate
+    displayName: 'Validate and Package'
+    jobs:
+      - job: Package
+        displayName: 'Package Function Apps'
+        pool:
+          vmImage: 'ubuntu-latest'
+
+        steps:
+          - checkout: self
+
+          - task: UsePythonVersion@0
+            displayName: 'Use Python 3.11'
+            inputs:
+              versionSpec: '3.11'
+
+          - script: |
+              python -m pip install --upgrade pip
+            displayName: 'Upgrade pip'
+
+          - script: |
+              set -e
+              cd $(normalizerProjectPath)
+              python -m pip install -r requirements.txt -t .python_packages/lib/site-packages
+            displayName: 'Install dependencies for event-normalizer'
+
+          - task: ArchiveFiles@2
+            displayName: 'Archive event-normalizer'
+            inputs:
+              rootFolderOrFile: '$(normalizerProjectPath)'
+              includeRootFolder: false
+              archiveType: 'zip'
+              archiveFile: '$(normalizerZip)'
+              replaceExistingArchive: true
+
+          - script: |
+              set -e
+              cd $(orchestratorProjectPath)
+              python -m pip install -r requirements.txt -t .python_packages/lib/site-packages
+            displayName: 'Install dependencies for orchestrator-core'
+
+          - task: ArchiveFiles@2
+            displayName: 'Archive orchestrator-core'
+            inputs:
+              rootFolderOrFile: '$(orchestratorProjectPath)'
+              includeRootFolder: false
+              archiveType: 'zip'
+              archiveFile: '$(orchestratorZip)'
+              replaceExistingArchive: true
+
+          - publish: '$(Build.ArtifactStagingDirectory)'
+            artifact: drop
+            displayName: 'Publish deployment artifacts'
+
+  - stage: Deploy_Infrastructure
+    displayName: 'Deploy Infrastructure'
+    dependsOn: Validate
+    jobs:
+      - deployment: DeployInfra
+        displayName: 'Deploy Bicep'
+        environment: 'autoheal-dev'
+        pool:
+          vmImage: 'ubuntu-latest'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: AzureCLI@2
+                  displayName: 'Create resource group'
+                  inputs:
+                    azureSubscription: '$(azureServiceConnection)'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      az group create \
+                        --name $(resourceGroupName) \
+                        --location $(location)
+
+                - task: AzureCLI@2
+                  displayName: 'Deploy Bicep template'
+                  inputs:
+                    azureSubscription: '$(azureServiceConnection)'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      az deployment group create \
+                        --resource-group $(resourceGroupName) \
+                        --template-file $(bicepFile) \
+                        --parameters prefix=$(prefix) environment=$(environmentName) location=$(location)
+
+                - task: AzureCLI@2
+                  displayName: 'Configure Function App settings'
+                  inputs:
+                    azureSubscription: '$(azureServiceConnection)'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      set -e
+
+                      NORMALIZER_APP="$(prefix)-$(environmentName)-func-normalizer"
+                      ORCHESTRATOR_APP="$(prefix)-$(environmentName)-func-orchestrator"
+                      STORAGE_ACCOUNT="$(prefix)$(environmentName)stg01"
+                      SERVICEBUS_NAMESPACE="$(prefix)-$(environmentName)-sb"
+                      QUEUE_NAME="remediation-events"
+                      APPINSIGHTS_NAME="$(prefix)-$(environmentName)-appi"
+
+                      STORAGE_CONNECTION=$(az storage account show-connection-string \
+                        --resource-group $(resourceGroupName) \
+                        --name $STORAGE_ACCOUNT \
+                        --query connectionString -o tsv)
+
+                      SB_CONNECTION=$(az servicebus namespace authorization-rule keys list \
+                        --resource-group $(resourceGroupName) \
+                        --namespace-name $SERVICEBUS_NAMESPACE \
+                        --name RootManageSharedAccessKey \
+                        --query primaryConnectionString -o tsv)
+
+                      APPINSIGHTS_CONNECTION=$(az monitor app-insights component show \
+                        --app $APPINSIGHTS_NAME \
+                        --resource-group $(resourceGroupName) \
+                        --query connectionString -o tsv)
+
+                      az functionapp config appsettings set \
+                        --resource-group $(resourceGroupName) \
+                        --name $NORMALIZER_APP \
+                        --settings \
+                          AzureWebJobsStorage="$STORAGE_CONNECTION" \
+                          FUNCTIONS_WORKER_RUNTIME="python" \
+                          SCM_DO_BUILD_DURING_DEPLOYMENT="false" \
+                          WEBSITE_RUN_FROM_PACKAGE="1" \
+                          APPINSIGHTS_CONNECTION_STRING="$APPINSIGHTS_CONNECTION" \
+                          SERVICEBUS_CONNECTION="$SB_CONNECTION" \
+                          REMEDIATION_QUEUE_NAME="$QUEUE_NAME"
+
+                      az functionapp config appsettings set \
+                        --resource-group $(resourceGroupName) \
+                        --name $ORCHESTRATOR_APP \
+                        --settings \
+                          AzureWebJobsStorage="$STORAGE_CONNECTION" \
+                          FUNCTIONS_WORKER_RUNTIME="python" \
+                          SCM_DO_BUILD_DURING_DEPLOYMENT="false" \
+                          WEBSITE_RUN_FROM_PACKAGE="1" \
+                          APPINSIGHTS_CONNECTION_STRING="$APPINSIGHTS_CONNECTION" \
+                          SERVICEBUS_CONNECTION="$SB_CONNECTION" \
+                          REMEDIATION_QUEUE_NAME="$QUEUE_NAME"
+
+  - stage: Deploy_Functions
+    displayName: 'Deploy Function Code'
+    dependsOn: Deploy_Infrastructure
+    jobs:
+      - deployment: DeployFunctions
+        displayName: 'Deploy zipped Python Function Apps'
+        environment: 'autoheal-dev'
+        pool:
+          vmImage: 'ubuntu-latest'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: drop
+
+                - task: AzureFunctionApp@2
+                  displayName: 'Deploy event-normalizer'
+                  inputs:
+                    connectedServiceNameARM: '$(azureServiceConnection)'
+                    appType: 'functionAppLinux'
+                    appName: '$(prefix)-$(environmentName)-func-normalizer'
+                    package: '$(Pipeline.Workspace)/drop/event-normalizer.zip'
+
+                - task: AzureFunctionApp@2
+                  displayName: 'Deploy orchestrator-core'
+                  inputs:
+                    connectedServiceNameARM: '$(azureServiceConnection)'
+                    appType: 'functionAppLinux'
+                    appName: '$(prefix)-$(environmentName)-func-orchestrator'
+                    package: '$(Pipeline.Workspace)/drop/orchestrator-core.zip'
