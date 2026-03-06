@@ -1,0 +1,55 @@
+trigger: none
+
+parameters:
+- name: gitSha
+  type: string
+
+variables:
+  storageAccountName: autohealdevartifacts
+  artifactContainer: autoheal-artifacts
+
+stages:
+- stage: Deploy
+  jobs:
+  - deployment: DeployDev
+    environment: autoheal-dev
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+
+          - task: AzureCLI@2
+            inputs:
+              azureSubscription: 'sc-autoheal-dev'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                mkdir artifacts
+
+                az storage blob download \
+                  --account-name $(storageAccountName) \
+                  --container-name $(artifactContainer) \
+                  --name event-normalizer-${{ parameters.gitSha }}.zip \
+                  --file artifacts/event-normalizer.zip \
+                  --auth-mode login
+
+                az storage blob download \
+                  --account-name $(storageAccountName) \
+                  --container-name $(artifactContainer) \
+                  --name orchestrator-core-${{ parameters.gitSha }}.zip \
+                  --file artifacts/orchestrator-core.zip \
+                  --auth-mode login
+
+          - task: AzureFunctionApp@2
+            inputs:
+              connectedServiceNameARM: sc-autoheal-dev
+              appType: functionAppLinux
+              appName: autoheal-dev-func-normalizer
+              package: artifacts/event-normalizer.zip
+
+          - task: AzureFunctionApp@2
+            inputs:
+              connectedServiceNameARM: sc-autoheal-dev
+              appType: functionAppLinux
+              appName: autoheal-dev-func-orchestrator
+              package: artifacts/orchestrator-core.zip
